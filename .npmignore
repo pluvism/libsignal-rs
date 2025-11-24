@@ -1,0 +1,17 @@
+rust/
+**/*.rs
+**/*.toml
+scripts/
+.idea/
+.vscode/
+Cargo.lock
+.git/
+.gitignore
+*.swp
+npm-debug.log
+test/
+docs/
+examples/
+.github/
+*.log
+*.tgz

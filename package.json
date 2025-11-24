@@ -1,0 +1,31 @@
+{
+  "name": "libsignal-rs",
+  "version": "0.1.0",
+  "description": "Rust native bindings for libsignal (N-API)",
+  "repository": "",
+  "keywords": [
+    "signal",
+    "libsignal",
+    "napi",
+    "rust",
+    "crypto"
+  ],
+  "license": "MIT",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "index.node"
+  ],
+  "scripts": {
+    "build-native": "node ./scripts/build-native.js",
+    "preinstall": "node ./scripts/preinstall.js",
+    "install": "node ./scripts/install-if-needed.js",
+    "clean": "cargo clean"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {
+    "protobufjs": "^7.5.4"
+  }
+}

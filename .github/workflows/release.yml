@@ -1,0 +1,161 @@
+name: Build and Publish Native Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  
+  create-release:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create temporary draft release for manual run
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        with:
+          tag_name: manual-${{ github.run_id }}
+          release_name: "Manual release - run ${{ github.run_id }}"
+          body:  release created by workflow_dispatch (run ${{ github.run_id }})."
+          draft: false
+
+  build-and-upload:
+    needs: [create-release]
+    runs-on: ${{ matrix.os }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      
+      
+      
+      - name: Compute UPLOAD_URL
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            echo "UPLOAD_URL=${GITHUB_EVENT_RELEASE_UPLOAD_URL}" >> "$GITHUB_ENV"
+          else
+            
+            echo "UPLOAD_URL=${{ needs.create-release.outputs.upload_url }}" >> "$GITHUB_ENV"
+          fi
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          
+          GITHUB_EVENT_RELEASE_UPLOAD_URL: ${{ github.event.release.upload_url }}
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+
+      ####################################################################
+      
+      ####################################################################
+      - name: Prepare OpenSSL (Ubuntu)
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev ca-certificates
+
+      - name: Prepare OpenSSL (macOS)
+        if: ${{ matrix.os == 'macos-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew update
+          brew install openssl@1.1 || brew install openssl || true
+          OPENSSL_PREFIX="$(brew --prefix openssl@1.1 2>/dev/null || brew --prefix openssl 2>/dev/null || true)"
+          if [ -z "$OPENSSL_PREFIX" ]; then
+            echo "Failed to find brewed OpenSSL prefix"; exit 1
+          fi
+          echo "OPENSSL_DIR=$OPENSSL_PREFIX" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$OPENSSL_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      
+
+      ####################################################################
+      
+      ####################################################################
+      - name: Build (release) for Linux (x86_64)
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        working-directory: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../release-artifacts
+          echo "Building x86_64-unknown-linux-gnu (native)"
+          cargo build --release
+          src=$(find target/release -maxdepth 1 -type f -name "*.so" -print -quit)
+          if [ -z "$src" ]; then
+            echo "No Linux native artifact found in rust/target/release"; exit 1
+          fi
+          cp "$src" ../release-artifacts/libsignal-rs-linux-x86_64.node
+
+      - name: Build (release) for macOS
+        if: ${{ matrix.os == 'macos-latest' }}
+        working-directory: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release
+
+      - name: Locate and copy artifact (macOS)
+        if: ${{ matrix.os == 'macos-latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          src=$(find rust/target/release -maxdepth 1 -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.a" \) -print -quit)
+          if [ -z "$src" ]; then
+            echo "No native artifact found in rust/target/release"; exit 1
+          fi
+          cp "$src" release-artifacts/libsignal-rs-macos.node
+
+      
+
+      ####################################################################
+      
+      
+      
+      ####################################################################
+      - name: Upload release asset (Linux x86_64)
+        if: ${{ env.UPLOAD_URL != '' && matrix.os == 'ubuntu-latest' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ env.UPLOAD_URL }}
+          asset_path: ./release-artifacts/libsignal-rs-linux-x86_64.node
+          asset_name: libsignal-rs-linux-x86_64.node
+          asset_content_type: application/octet-stream
+
+
+      - name: Upload release asset (macOS)
+        if: ${{ env.UPLOAD_URL != '' && matrix.os == 'macos-latest' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ env.UPLOAD_URL }}
+          asset_path: ./release-artifacts/libsignal-rs-macos.node
+          asset_name: libsignal-rs-macos.node
+          asset_content_type: application/octet-stream
+
+      
