@@ -27,6 +27,8 @@ jobs:
             echo "upload_url=${GITHUB_EVENT_RELEASE_UPLOAD_URL}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          
           echo "Creating temporary draft release for manual run"
           
       - name: Create temporary draft release (manual)
@@ -210,7 +212,7 @@ jobs:
           profile: minimal
 
       - name: Setup Android NDK
-        uses: webbertakken/setup-ndk@v2
+        uses: nttld/setup-ndk@v1
         with:
           ndk-version: '25.2.9519653'
 
