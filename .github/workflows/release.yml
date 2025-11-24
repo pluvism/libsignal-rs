@@ -214,7 +214,7 @@ jobs:
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: '25.2.9519653'
+          ndk-version: '26.2.11394342'
 
       - name: Install cargo-ndk
         shell: bash
