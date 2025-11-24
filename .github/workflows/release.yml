@@ -10,56 +10,63 @@ permissions:
 
 jobs:
   
-  create-release:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+  prepare-upload:
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create temporary draft release for manual run
+      - name: Prepare upload URL (release or manual)
+        id: set_upload_url
+        run: |
+          set -euo pipefail
+          
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            echo "upload_url=${GITHUB_EVENT_RELEASE_UPLOAD_URL}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Creating temporary draft release for manual run"
+          
+      - name: Create temporary draft release (manual)
         id: create_release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: manual-${{ github.run_id }}
           release_name: "Manual release - run ${{ github.run_id }}"
-          body:  release created by workflow_dispatch (run ${{ github.run_id }})."
-          draft: false
+          body: "Temporary draft release created by workflow_dispatch (run ${{ github.run_id }})."
+          draft: true
 
+      - name: Export upload_url from create_release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          echo "upload_url=${{ steps.create_release.outputs.upload_url }}" >> "$GITHUB_OUTPUT"
+        shell: bash
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_RELEASE_UPLOAD_URL: ${{ github.event.release.upload_url }}
+
+  
   build-and-upload:
-    needs: [create-release]
+    needs: [prepare-upload]
     runs-on: ${{ matrix.os }}
-    env:
-      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      
-      
-      
-      - name: Compute UPLOAD_URL
+      - name: Get upload URL from prepare-upload
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
-            echo "UPLOAD_URL=${GITHUB_EVENT_RELEASE_UPLOAD_URL}" >> "$GITHUB_ENV"
-          else
-            
-            echo "UPLOAD_URL=${{ needs.create-release.outputs.upload_url }}" >> "$GITHUB_ENV"
-          fi
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          
-          GITHUB_EVENT_RELEASE_UPLOAD_URL: ${{ github.event.release.upload_url }}
+          echo "UPLOAD_URL=${{ needs.prepare-upload.outputs.upload_url }}" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
@@ -67,36 +74,6 @@ jobs:
           toolchain: stable
           profile: minimal
 
-      ####################################################################
-      
-      ####################################################################
-      - name: Prepare OpenSSL (Ubuntu)
-        if: ${{ matrix.os == 'ubuntu-latest' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev ca-certificates
-
-      - name: Prepare OpenSSL (macOS)
-        if: ${{ matrix.os == 'macos-latest' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          brew update
-          brew install openssl@1.1 || brew install openssl || true
-          OPENSSL_PREFIX="$(brew --prefix openssl@1.1 2>/dev/null || brew --prefix openssl 2>/dev/null || true)"
-          if [ -z "$OPENSSL_PREFIX" ]; then
-            echo "Failed to find brewed OpenSSL prefix"; exit 1
-          fi
-          echo "OPENSSL_DIR=$OPENSSL_PREFIX" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$OPENSSL_PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
-
-      
-
-      ####################################################################
-      
-      ####################################################################
       - name: Build (release) for Linux (x86_64)
         if: ${{ matrix.os == 'ubuntu-latest' }}
         working-directory: rust
@@ -132,30 +109,177 @@ jobs:
           fi
           cp "$src" release-artifacts/libsignal-rs-macos.node
 
-      
+      - name: Build (release) for Windows
+        if: ${{ matrix.os == 'windows-latest' }}
+        working-directory: rust
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --release
 
-      ####################################################################
-      
-      
-      
-      ####################################################################
+      - name: Locate and copy artifact (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = Join-Path $env:GITHUB_WORKSPACE 'rust\target\release'
+          if (-not (Test-Path $target)) { throw "Build output not found at $target" }
+
+          $dll = Get-ChildItem $target -Filter *.dll -File | Select-Object -First 1
+          if (-not $dll) { throw "No DLL found in $target" }
+
+          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\release-artifacts" -Force | Out-Null
+          Copy-Item $dll.FullName -Destination "$env:GITHUB_WORKSPACE\release-artifacts\libsignal-rs-windows.dll" -Force
+
+
+      - name: Check Linux artifact exists
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        id: check_asset_linux
+        shell: bash
+        run: |
+          if [ -f ./release-artifacts/libsignal-rs-linux-x86_64.node ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload release asset (Linux x86_64)
-        if: ${{ env.UPLOAD_URL != '' && matrix.os == 'ubuntu-latest' }}
+        if: ${{ needs.prepare-upload.outputs.upload_url != '' && matrix.os == 'ubuntu-latest' && steps.check_asset_linux.outputs.exists == 'true' }}
         uses: actions/upload-release-asset@v1
         with:
-          upload_url: ${{ env.UPLOAD_URL }}
+          upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
           asset_path: ./release-artifacts/libsignal-rs-linux-x86_64.node
           asset_name: libsignal-rs-linux-x86_64.node
           asset_content_type: application/octet-stream
 
+      - name: Check macOS artifact exists
+        if: ${{ matrix.os == 'macos-latest' }}
+        id: check_asset_macos
+        shell: bash
+        run: |
+          if [ -f release-artifacts/libsignal-rs-macos.node ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload release asset (macOS)
-        if: ${{ env.UPLOAD_URL != '' && matrix.os == 'macos-latest' }}
+        if: ${{ needs.prepare-upload.outputs.upload_url != '' && matrix.os == 'macos-latest' && steps.check_asset_macos.outputs.exists == 'true' }}
         uses: actions/upload-release-asset@v1
         with:
-          upload_url: ${{ env.UPLOAD_URL }}
+          upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
           asset_path: ./release-artifacts/libsignal-rs-macos.node
           asset_name: libsignal-rs-macos.node
           asset_content_type: application/octet-stream
 
-      
+      - name: Check Windows artifact exists
+        if: ${{ matrix.os == 'windows-latest' }}
+        id: check_asset_windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Join-Path $env:GITHUB_WORKSPACE 'release-artifacts\libsignal-rs-windows.dll'
+          if (Test-Path $p) { echo "exists=true" >> $env:GITHUB_OUTPUT } else { echo "exists=false" >> $env:GITHUB_OUTPUT }
+
+      - name: Upload release asset (Windows)
+        if: ${{ needs.prepare-upload.outputs.upload_url != '' && matrix.os == 'windows-latest' && steps.check_asset_windows.outputs.exists == 'true' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
+          asset_path: ./release-artifacts/libsignal-rs-windows.dll
+          asset_name: libsignal-rs-windows.dll
+          asset_content_type: application/octet-stream
+
+  
+  build-android:
+    needs: [prepare-upload]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Get upload URL from prepare-upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UPLOAD_URL=${{ needs.prepare-upload.outputs.upload_url }}" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - name: Setup Android NDK
+        uses: webbertakken/setup-ndk@v2
+        with:
+          ndk-version: '25.2.9519653'
+
+      - name: Install cargo-ndk
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-ndk --locked || true
+
+      - name: Add Android targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-linux-android armv7-linux-androideabi || true
+
+      - name: Build Android (arm64 + armv7)
+        working-directory: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../release-artifacts
+          
+          cargo ndk -t arm64-v8a -t armeabi-v7a --release build || true
+          
+          a64=$(find target -type f -path "*/aarch64-linux-android/release/*.so" -print -quit)
+          if [ -n "$a64" ]; then
+            cp "$a64" ../release-artifacts/libsignal-rs-android-arm64.node
+          fi
+          a32=$(find target -type f -path "*/armv7-linux-androideabi/release/*.so" -print -quit)
+          if [ -n "$a32" ]; then
+            cp "$a32" ../release-artifacts/libsignal-rs-android-armv7.node
+          fi
+
+      - name: Check Android arm64 artifact exists
+        id: check_asset_android_a64
+        shell: bash
+        run: |
+          if [ -f ./release-artifacts/libsignal-rs-android-arm64.node ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload release asset (Android arm64)
+        if: ${{ needs.prepare-upload.outputs.upload_url != '' && steps.check_asset_android_a64.outputs.exists == 'true' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
+          asset_path: ./release-artifacts/libsignal-rs-android-arm64.node
+          asset_name: libsignal-rs-android-arm64.node
+          asset_content_type: application/octet-stream
+
+      - name: Check Android armv7 artifact exists
+        id: check_asset_android_a32
+        shell: bash
+        run: |
+          if [ -f ./release-artifacts/libsignal-rs-android-armv7.node ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload release asset (Android armv7)
+        if: ${{ needs.prepare-upload.outputs.upload_url != '' && steps.check_asset_android_a32.outputs.exists == 'true' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
+          asset_path: ./release-artifacts/libsignal-rs-android-armv7.node
+          asset_name: libsignal-rs-android-armv7.node
+          asset_content_type: application/octet-stream
+
+

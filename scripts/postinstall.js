@@ -8,9 +8,24 @@ const token = process.env.GITHUB_TOKEN || process.env.LIBSIGNAL_RS_GITHUB_TOKEN 
 function getAssetName() {
   const plat = process.platform;
   const arch = process.arch;
+
+  
+  if (plat === 'android') {
+    if (arch === 'arm64' || arch === 'aarch64') return 'libsignal-rs-android-arm64.node';
+    if (arch === 'arm' || arch === 'armv7l') return 'libsignal-rs-android-armv7.node';
+  }
+  
   if (plat === 'linux') {
     if (arch === 'x64') return 'libsignal-rs-linux-x86_64.node';
-    if (arch === 'arm64' || arch === 'aarch64') return 'libsignal-rs-linux-aarch64.node';
+    if (arch === 'arm64' || arch === 'aarch64') {
+      
+      if (process.env.ANDROID_ROOT || process.env.ANDROID_DATA) return 'libsignal-rs-android-arm64.node';
+      return 'libsignal-rs-linux-aarch64.node';
+    }
+    if (arch === 'arm' || arch === 'armv7l') {
+      if (process.env.ANDROID_ROOT || process.env.ANDROID_DATA) return 'libsignal-rs-android-armv7.node';
+      return 'libsignal-rs-linux-armv7.node'; 
+    }
   }
   if (plat === 'darwin') return 'libsignal-rs-macos.node';
   if (plat === 'win32') throw new Error('Prebuilt binaries are not provided for Windows platforms yet.');
@@ -19,7 +34,7 @@ function getAssetName() {
 
 function getJSON(url) {
   return new Promise((resolve, reject) => {
-    const opts = { headers: { 'User-Agent': 'libsignal-rs-preinstall' } };
+    const opts = { headers: { 'User-Agent': 'libsignal-rs-Postinstall' } };
     if (token) opts.headers['Authorization'] = `token ${token}`;
     https.get(url, opts, (res) => {
       let data = '';
@@ -39,10 +54,10 @@ function getJSON(url) {
 function download(url, dest) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
-    const opts = { headers: { 'User-Agent': 'libsignal-rs-preinstall' } };
+    const opts = { headers: { 'User-Agent': 'libsignal-rs-postinstall' } };
     if (token) opts.headers['Authorization'] = `token ${token}`;
     https.get(url, opts, (res) => {
-      // follow redirects
+      
       if (res.statusCode === 302 || res.statusCode === 301) {
         return download(res.headers.location, dest).then(resolve).catch(reject);
       }
@@ -64,39 +79,39 @@ function download(url, dest) {
     const outPath = path.join(__dirname, '..', 'index.node');
 
     if (!assetName) {
-      console.log('Preinstall: no prebuilt available for this platform/arch; skipping download.');
+      console.log('Postinstall: no prebuilt available for this platform/arch; skipping download.');
       return process.exit(0);
     }
 
-    // if file already exists, skip.
+    
     if (fs.existsSync(outPath)) {
-      console.log('Preinstall: native binary already present, skipping download.');
+      console.log('Postinstall: native binary already present, skipping download.');
       return process.exit(0);
     }
 
-    console.log(`Preinstall: looking for release asset '${assetName}' in ${repo}`);
+    console.log(`Postinstall: looking for release asset '${assetName}' in ${repo}`);
     const apiUrl = `https://api.github.com/repos/${repo}/releases/latest`;
     const release = await getJSON(apiUrl);
     if (!release || !Array.isArray(release.assets)) {
-      console.log('Preinstall: no release assets found, falling back to build.');
+      console.log('Postinstall: no release assets found, falling back to build.');
       return process.exit(0);
     }
 
     const asset = release.assets.find(a => a.name === assetName);
     if (!asset) {
-      console.log(`Preinstall: asset '${assetName}' not found in latest release; falling back to build.`);
+      console.log(`Postinstall: asset '${assetName}' not found in latest release; falling back to build.`);
       return process.exit(0);
     }
 
-    console.log(`Preinstall: downloading ${asset.browser_download_url} ...`);
+    console.log(`Postinstall: downloading ${asset.browser_download_url} ...`);
     await download(asset.browser_download_url, outPath);
-    console.log('Preinstall: downloaded native asset to', outPath);
-    // Ensure executable permissions on *nix
+    console.log('Postinstall: downloaded native asset to', outPath);
+    
     try { fs.chmodSync(outPath, 0o755); } catch (e) {}
     process.exit(0);
   } catch (err) {
-    console.error('Preinstall: error while attempting to download prebuilt:', err.message || err);
-    console.log('Preinstall: continuing install; build-from-source will be attempted if available.');
+    console.error('Postinstall: error while attempting to download prebuilt:', err.message || err);
+    console.log('Postinstall: continuing install; build-from-source will be attempted if available.');
     return process.exit(0);
   }
 })();

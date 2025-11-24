@@ -3,7 +3,7 @@ mod libsignal;
 use libsignal::curve;
 
 use napi::bindgen_prelude::Buffer;
-use napi::{Error, Result, Status};
+use napi::{Error, Result};
 use napi_derive::napi;
 
 use rand::TryRngCore;
