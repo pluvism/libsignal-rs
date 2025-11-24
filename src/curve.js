@@ -21,41 +21,9 @@ function validatePrivKey(privKey) {
     }
 }
 
-function scrubPubKeyFormat(pubKey) {
-    if (!(pubKey instanceof Buffer)) {
-        throw new Error(`Invalid public key type: ${pubKey?.constructor?.name}`);
-    }
-    if (pubKey === undefined || ((pubKey.byteLength != 33 || pubKey[0] != 5) && pubKey.byteLength != 32)) {
-        throw new Error("Invalid public key");
-    }
-    if (pubKey.byteLength == 33) {
-        return pubKey.slice(1);
-    } else {
-        console.error("WARNING: Expected pubkey of length 33, please report the ST and client that generated the pubkey");
-        return pubKey;
-    }
-}
-
-
-function unclampEd25519PrivateKey(clampedSk) {
-    const unclampedSk = new Uint8Array(clampedSk);
-
-    // Fix the first byte
-    unclampedSk[0] |= 6; // Ensure last 3 bits match expected `110` pattern
-
-    // Fix the last byte
-    unclampedSk[31] |= 128; // Restore the highest bit
-    unclampedSk[31] &= ~64; // Clear the second-highest bit
-
-    return unclampedSk;
-}
-
 exports.generateKeyPair = function() {
     const fn = getNative('generate_key_pair', 'generateKeyPair');
-    const kp = fn();
-    const priv = kp.privateKey;
-    const pub = kp.publicKey;
-    return { privKey: Buffer.from(priv), pubKey: Buffer.from(pub) };
+    return fn();
 };
 
 
@@ -63,13 +31,13 @@ exports.generateKeyPair = function() {
 exports.getPublicFromPrivateKey = function(privKey) {
     validatePrivKey(privKey);
     const fn = getNative('get_public_from_private_key', 'getPublicFromPrivateKey');
-    return Buffer.from(fn(privKey));
+    return fn(privKey)
 };
 
 exports.calculateAgreement = function(pubKey, privKey) {
     validatePrivKey(privKey);
     const fn = getNative('calculate_agreement', 'calculateAgreement');
-    return Buffer.from(fn(pubKey, privKey));
+    return fn(pubKey, privKey)
 };
 
 exports.calculateSignature = function(privKey, message) {
@@ -78,14 +46,10 @@ exports.calculateSignature = function(privKey, message) {
         throw new Error("Invalid message");
     }
     const fn = getNative('calculate_signature', 'calculateSignature');
-    return Buffer.from(fn(privKey, message));
+    return fn(privKey, message)
 };
 
 exports.verifySignature = function(pubKey, msg, sig, isInit = false) {
-    pubKey = scrubPubKeyFormat(pubKey);
-    if (!pubKey || pubKey.byteLength != 32) {
-        throw new Error("Invalid public key ok");
-    }
     if (!msg) {
         throw new Error("Invalid message");
     }
