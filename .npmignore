@@ -1,7 +1,6 @@
 rust/
 **/*.rs
 **/*.toml
-scripts/
 .idea/
 .vscode/
 Cargo.lock
