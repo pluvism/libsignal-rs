@@ -13,7 +13,8 @@ jobs:
   prepare-upload:
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
+      upload_url: ${{ steps.emit_outputs.outputs.upload_url }}
+      release_id: ${{ steps.emit_outputs.outputs.release_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,24 +28,35 @@ jobs:
             echo "upload_url=${GITHUB_EVENT_RELEASE_UPLOAD_URL}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "Creating temporary draft release for manual run"
+
           
-      - name: Create temporary draft release (manual)
+          echo "release for manual run"
+          
+      - name: release (manual)
         id: create_release
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
         with:
           tag_name: manual-${{ github.run_id }}
           release_name: "Manual release - run ${{ github.run_id }}"
           body: "Temporary draft release created by workflow_dispatch (run ${{ github.run_id }})."
-          draft: true
+          draft: false
 
-      - name: Export upload_url from create_release
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Emit job outputs
+        id: emit_outputs
         run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            echo "upload_url=${GITHUB_EVENT_RELEASE_UPLOAD_URL}" >> "$GITHUB_OUTPUT"
+            echo "release_id=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # For manual runs use the create_release outputs
           echo "upload_url=${{ steps.create_release.outputs.upload_url }}" >> "$GITHUB_OUTPUT"
+          echo "release_id=${{ steps.create_release.outputs.id }}" >> "$GITHUB_OUTPUT"
         shell: bash
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
@@ -54,6 +66,8 @@ jobs:
   build-and-upload:
     needs: [prepare-upload]
     runs-on: ${{ matrix.os }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -209,36 +223,32 @@ jobs:
           toolchain: stable
           profile: minimal
 
-      - name: Setup Android NDK
-        uses: webbertakken/setup-ndk@v2
-        with:
-          ndk-version: '25.2.9519653'
-
-      - name: Install cargo-ndk
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo install cargo-ndk --locked || true
-
-      - name: Add Android targets
+      - name: Add Android Rust targets
         shell: bash
         run: |
           set -euo pipefail
           rustup target add aarch64-linux-android armv7-linux-androideabi || true
 
-      - name: Build Android (arm64 + armv7)
+      - name: Build Android (arm64)
         working-directory: rust
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p ../release-artifacts
-          
-          cargo ndk -t arm64-v8a -t armeabi-v7a --release build || true
-          
+          echo "Building target aarch64-linux-android"
+          cargo build --release --target aarch64-linux-android || true
           a64=$(find target -type f -path "*/aarch64-linux-android/release/*.so" -print -quit)
           if [ -n "$a64" ]; then
             cp "$a64" ../release-artifacts/libsignal-rs-android-arm64.node
           fi
+
+      - name: Build Android (armv7)
+        working-directory: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Building target armv7-linux-androideabi"
+          cargo build --release --target armv7-linux-androideabi || true
           a32=$(find target -type f -path "*/armv7-linux-androideabi/release/*.so" -print -quit)
           if [ -n "$a32" ]; then
             cp "$a32" ../release-artifacts/libsignal-rs-android-armv7.node
@@ -281,5 +291,4 @@ jobs:
           asset_path: ./release-artifacts/libsignal-rs-android-armv7.node
           asset_name: libsignal-rs-android-armv7.node
           asset_content_type: application/octet-stream
-
 

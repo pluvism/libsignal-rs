@@ -28,7 +28,8 @@ function getAssetName() {
     }
   }
   if (plat === 'darwin') return 'libsignal-rs-macos.node';
-  if (plat === 'win32') throw new Error('Prebuilt binaries are not provided for Windows platforms yet.');
+  if (plat === 'win32') return 'libsignal-rs-windows.dll';
+
   return null;
 }
 
