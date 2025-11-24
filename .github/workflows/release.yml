@@ -37,7 +37,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN ${{ secrets.RELEASE_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
         with:
           tag_name: manual-${{ github.run_id }}
           release_name: "Manual release - run ${{ github.run_id }}"
