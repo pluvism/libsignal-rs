@@ -66,6 +66,8 @@ jobs:
   build-and-upload:
     needs: [prepare-upload]
     runs-on: ${{ matrix.os }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
