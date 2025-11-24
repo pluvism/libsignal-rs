@@ -14,7 +14,9 @@
   "main": "index.js",
   "files": [
     "index.js",
-    "index.node"
+    "src",
+    "scripts",
+    "protos"
   ],
   "scripts": {
     "build-native": "node ./scripts/build-native.js",
