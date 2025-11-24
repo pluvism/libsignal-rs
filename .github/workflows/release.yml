@@ -13,7 +13,8 @@ jobs:
   prepare-upload:
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
+      upload_url: ${{ steps.emit_outputs.outputs.upload_url }}
+      release_id: ${{ steps.emit_outputs.outputs.release_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,9 +30,9 @@ jobs:
           fi
 
           
-          echo "Release for manual run"
+          echo "Creating temporary draft release for manual run"
           
-      - name: release (manual)
+      - name: Create temporary draft release (manual)
         id: create_release
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/create-release@v1
@@ -40,13 +41,22 @@ jobs:
         with:
           tag_name: manual-${{ github.run_id }}
           release_name: "Manual release - run ${{ github.run_id }}"
-          body: "created by workflow_dispatch (run ${{ github.run_id }})."
-          draft: false
+          body: "Temporary draft release created by workflow_dispatch (run ${{ github.run_id }})."
+          draft: true
 
-      - name: Export upload_url from create_release
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Emit job outputs
+        id: emit_outputs
         run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            echo "upload_url=${GITHUB_EVENT_RELEASE_UPLOAD_URL}" >> "$GITHUB_OUTPUT"
+            echo "release_id=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # For manual runs use the create_release outputs
           echo "upload_url=${{ steps.create_release.outputs.upload_url }}" >> "$GITHUB_OUTPUT"
+          echo "release_id=${{ steps.create_release.outputs.id }}" >> "$GITHUB_OUTPUT"
         shell: bash
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
@@ -279,5 +289,22 @@ jobs:
           asset_path: ./release-artifacts/libsignal-rs-android-armv7.node
           asset_name: libsignal-rs-android-armv7.node
           asset_content_type: application/octet-stream
+
+
+  cleanup-upload:
+    needs: [prepare-upload, build-and-upload, build-android]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.prepare-upload.outputs.release_id != '' }}
+    steps:
+      - name: Delete temporary draft release
+        run: |
+          set -euo pipefail
+          echo "Deleting temporary draft release id=${{ needs.prepare-upload.outputs.release_id }}"
+          curl -sS -X DELETE \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/${{ needs.prepare-upload.outputs.release_id }}"
+
+      
 
 
