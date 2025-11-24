@@ -1,7 +1,6 @@
 "use strict";
 
 const native = require('../index.node');
-const curveJs = require('curve25519-js');
 
 function getNative(snake, camel) {
     if (!native) throw new Error('Native binding ../index.node is not loaded.');
