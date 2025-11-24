@@ -29,9 +29,9 @@ jobs:
           fi
 
           
-          echo "Creating temporary draft release for manual run"
+          echo "Release for manual run"
           
-      - name: Create temporary draft release (manual)
+      - name: release (manual)
         id: create_release
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/create-release@v1
@@ -40,8 +40,8 @@ jobs:
         with:
           tag_name: manual-${{ github.run_id }}
           release_name: "Manual release - run ${{ github.run_id }}"
-          body: "Temporary draft release created by workflow_dispatch (run ${{ github.run_id }})."
-          draft: true
+          body: "created by workflow_dispatch (run ${{ github.run_id }})."
+          draft: false
 
       - name: Export upload_url from create_release
         if: ${{ github.event_name == 'workflow_dispatch' }}
