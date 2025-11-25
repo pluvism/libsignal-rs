@@ -115,6 +115,7 @@ jobs:
       - name: Build with cross
         uses: houseabsolute/actions-rust-cross@v1
         with:
+          working-directory: rust 
           command: "build"
           target: ${{ matrix.platform.target }}
           toolchain: ${{ matrix.toolchain }}
