@@ -1,8 +1,13 @@
 name: Build & Release (Core Platforms)
 
 on:
-  workflow_dispatch:
+  release:
+    types: [published]
+  workflow_dispatch: {}
 
+permissions:
+  contents: write
+  
 env:
   GITHUB_TOKEN ${{ secrets.RELEASE_GITHUB_TOKEN }}
   RUST_BACKTRACE: 1
