@@ -42,10 +42,11 @@ jobs:
           # --------------------------
           # Android ARM64 (aarch64)
           # --------------------------
-          - name: Android arm64
-            os: ubuntu-latest
-            target: aarch64-linux-android
-            asset: libsignal-rs-android-arm64.node
+          # TODO:
+          # - name: Android arm64
+          #   os: ubuntu-latest
+          #   target: aarch64-linux-android
+          #   asset: libsignal-rs-android-arm64.node
 
           # --------------------------
           # Android ARMv7
