@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  
+  # optional: tune for runner CPU if desired
   RUSTFLAGS: "-C target-cpu=native"
 
 jobs:
@@ -109,14 +109,41 @@ jobs:
           toolchain: stable
           profile: minimal
 
-      - name: Install cross (cargo)
+      - name: Install cross (cargo) into workspace CARGO_HOME
+        # install cross into a deterministic local CARGO_HOME so we can add it to PATH easily
         env:
           CARGO_HOME: ${{ github.workspace }}/.cargo
         run: |
           set -euo pipefail
-          
+          echo "Installing cross into CARGO_HOME=$CARGO_HOME"
+          mkdir -p "$CARGO_HOME"
+          # install cross; allow failing if already installed
           cargo install --locked cross || true
-          cross --version
+          echo "Installed files in $CARGO_HOME/bin:"
+          ls -la "$CARGO_HOME/bin" || true
+          # sanity check run (may fail on permission issues but that's ok to show)
+          if [ -x "$CARGO_HOME/bin/cross" ]; then
+            "$CARGO_HOME/bin/cross" --version || true
+          fi
+
+      - name: Add cargo bin to PATH for remaining steps
+        run: |
+          set -euo pipefail
+          add_paths=()
+          add_paths+=("${{ github.workspace }}/.cargo/bin")
+          add_paths+=("$HOME/.cargo/bin")
+
+          for p in "${add_paths[@]}"; do
+            if [ -d "$p" ]; then
+              echo "Adding $p to PATH"
+              # prepend so it takes precedence
+              echo "PATH=$p:$PATH" >> "$GITHUB_ENV"
+            fi
+          done
+
+          # verify for current step (note: PATH written to GITHUB_ENV is used in following steps)
+          echo "Visible cross binary (if available):"
+          command -v cross || true
 
       - name: Build with cross for ${{ matrix.triple }}
         shell: bash
@@ -125,10 +152,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "Building for $TRIPLE using cross"
-          
+          # run cross (should be available via PATH now)
           cross build --release --target "$TRIPLE" --manifest-path rust/Cargo.toml -v
 
-          
+          # find artifact (pick first matching file)
           out=$(find rust/target/"$TRIPLE"/release -maxdepth 1 -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.a" -o -name "*.dll" -o -name "*.rlib" \) -print -quit || true)
           if [ -z "$out" ]; then
             echo "No artifact found for $TRIPLE in rust/target/$TRIPLE/release"
@@ -171,12 +198,12 @@ jobs:
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
-          asset_path: ${{ fromJson('["x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu","armv7-unknown-linux-gnueabihf"]') && format('release-artifacts/libsignal-rs-linux-{}.node', contains(matrix.triple, 'x86_64') && 'x86_64' || contains(matrix.triple, 'aarch64') && 'aarch64' || contains(matrix.triple, 'armv7') && 'armv7') }}
+          # asset_path/asset_name are chosen based on the triple
+          asset_path: ${{ matrix.triple == 'x86_64-unknown-linux-gnu' && 'release-artifacts/libsignal-rs-linux-x86_64.node' || matrix.triple == 'aarch64-unknown-linux-gnu' && 'release-artifacts/libsignal-rs-linux-aarch64.node' || matrix.triple == 'armv7-unknown-linux-gnueabihf' && 'release-artifacts/libsignal-rs-linux-armv7.node' || format('release-artifacts/libsignal-rs-{}.node', matrix.triple) }}
           asset_name: ${{ matrix.triple == 'x86_64-unknown-linux-gnu' && 'libsignal-rs-linux-x86_64.node' || matrix.triple == 'aarch64-unknown-linux-gnu' && 'libsignal-rs-linux-aarch64.node' || matrix.triple == 'armv7-unknown-linux-gnueabihf' && 'libsignal-rs-linux-armv7.node' || format('libsignal-rs-{}.node', matrix.triple) }}
           asset_content_type: application/octet-stream
 
 
-  
   build-macos-windows:
     needs: [prepare-upload]
     runs-on: ${{ matrix.os }}
@@ -281,7 +308,7 @@ jobs:
           asset_name: libsignal-rs-windows.dll
           asset_content_type: application/octet-stream
 
-  
+
   build-android:
     needs: [prepare-upload]
     runs-on: ubuntu-latest
