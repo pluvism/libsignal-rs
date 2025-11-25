@@ -8,8 +8,11 @@ on:
 permissions:
   contents: write
 
-jobs:
+env:
   
+  RUSTFLAGS: "-C target-cpu=native"
+
+jobs:
   prepare-upload:
     runs-on: ubuntu-latest
     outputs:
@@ -23,14 +26,12 @@ jobs:
         id: set_upload_url
         run: |
           set -euo pipefail
-          
           if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
             echo "upload_url=${GITHUB_EVENT_RELEASE_UPLOAD_URL}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
           echo "release for manual run"
-          
+
       - name: release (manual)
         id: create_release
         if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -52,8 +53,6 @@ jobs:
             echo "release_id=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          # For manual runs use the create_release outputs
           echo "upload_url=${{ steps.create_release.outputs.upload_url }}" >> "$GITHUB_OUTPUT"
           echo "release_id=${{ steps.create_release.outputs.id }}" >> "$GITHUB_OUTPUT"
         shell: bash
@@ -61,16 +60,131 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_EVENT_RELEASE_UPLOAD_URL: ${{ github.event.release.upload_url }}
 
-  
-  build-and-upload:
+
+  build-with-cross:
     needs: [prepare-upload]
-    runs-on: ${{ matrix.os }}
-    env:
-      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        triple: [
+          "x86_64-unknown-linux-gnu",
+          "aarch64-unknown-linux-gnu",
+          "armv7-unknown-linux-gnueabihf"
+        ]
+    env:
+      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
+      - name: Set up QEMU (for cross runtime emulation used by some cross images)
+        uses: docker/setup-qemu-action@v2
+        with:
+          platforms: all
+
+      - name: Set up Docker Buildx (needed by cross)
+        uses: docker/setup-buildx-action@v2
+
+      - name: Get upload URL from prepare-upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UPLOAD_URL=${{ needs.prepare-upload.outputs.upload_url }}" >> "$GITHUB_ENV"
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: cargo-cache-${{ runner.os }}-$(echo "${{ matrix.triple }}" | tr / -)-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            cargo-cache-${{ runner.os }}-$(echo "${{ matrix.triple }}" | tr / -)-
+
+
+      - name: Install Rust toolchain (for installing cross)
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - name: Install cross (cargo)
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
+        run: |
+          set -euo pipefail
+          
+          cargo install --locked cross || true
+          cross --version
+
+      - name: Build with cross for ${{ matrix.triple }}
+        shell: bash
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          echo "Building for $TRIPLE using cross"
+          
+          cross build --release --target "$TRIPLE" --manifest-path rust/Cargo.toml -v
+
+          
+          out=$(find rust/target/"$TRIPLE"/release -maxdepth 1 -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.a" -o -name "*.dll" -o -name "*.rlib" \) -print -quit || true)
+          if [ -z "$out" ]; then
+            echo "No artifact found for $TRIPLE in rust/target/$TRIPLE/release"
+            ls -la rust/target/"$TRIPLE"/release || true
+            exit 1
+          fi
+          echo "Found artifact: $out"
+
+          case "$TRIPLE" in
+            x86_64-unknown-linux-gnu) dest=release-artifacts/libsignal-rs-linux-x86_64.node ;;
+            aarch64-unknown-linux-gnu) dest=release-artifacts/libsignal-rs-linux-aarch64.node ;;
+            armv7-unknown-linux-gnueabihf) dest=release-artifacts/libsignal-rs-linux-armv7.node ;;
+            *) dest=release-artifacts/libsignal-rs-"$TRIPLE".node ;;
+          esac
+
+          mkdir -p release-artifacts
+          cp "$out" "$dest"
+          echo "Wrote $dest"
+          ls -la release-artifacts
+
+      - name: Check asset exists (matrix)
+        id: check_asset_matrix
+        shell: bash
+        run: |
+          TRIPLE=${{ matrix.triple }}
+          case "$TRIPLE" in
+            x86_64-unknown-linux-gnu) p=release-artifacts/libsignal-rs-linux-x86_64.node ;;
+            aarch64-unknown-linux-gnu) p=release-artifacts/libsignal-rs-linux-aarch64.node ;;
+            armv7-unknown-linux-gnueabihf) p=release-artifacts/libsignal-rs-linux-armv7.node ;;
+            *) p=release-artifacts/libsignal-rs-"$TRIPLE".node ;;
+          esac
+          if [ -f "$p" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload release asset (matrix)
+        if: ${{ needs.prepare-upload.outputs.upload_url != '' && steps.check_asset_matrix.outputs.exists == 'true' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
+          asset_path: ${{ fromJson('["x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu","armv7-unknown-linux-gnueabihf"]') && format('release-artifacts/libsignal-rs-linux-{}.node', contains(matrix.triple, 'x86_64') && 'x86_64' || contains(matrix.triple, 'aarch64') && 'aarch64' || contains(matrix.triple, 'armv7') && 'armv7') }}
+          asset_name: ${{ matrix.triple == 'x86_64-unknown-linux-gnu' && 'libsignal-rs-linux-x86_64.node' || matrix.triple == 'aarch64-unknown-linux-gnu' && 'libsignal-rs-linux-aarch64.node' || matrix.triple == 'armv7-unknown-linux-gnueabihf' && 'libsignal-rs-linux-armv7.node' || format('libsignal-rs-{}.node', matrix.triple) }}
+          asset_content_type: application/octet-stream
+
+
+  
+  build-macos-windows:
+    needs: [prepare-upload]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    env:
+      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -87,22 +201,7 @@ jobs:
           toolchain: stable
           profile: minimal
 
-      - name: Build (release) for Linux (x86_64)
-        if: ${{ matrix.os == 'ubuntu-latest' }}
-        working-directory: rust
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ../release-artifacts
-          echo "Building x86_64-unknown-linux-gnu (native)"
-          cargo build --release
-          src=$(find target/release -maxdepth 1 -type f -name "*.so" -print -quit)
-          if [ -z "$src" ]; then
-            echo "No Linux native artifact found in rust/target/release"; exit 1
-          fi
-          cp "$src" ../release-artifacts/libsignal-rs-linux-x86_64.node
-
-      - name: Build (release) for macOS
+      - name: Build macOS (release)
         if: ${{ matrix.os == 'macos-latest' }}
         working-directory: rust
         shell: bash
@@ -121,49 +220,6 @@ jobs:
             echo "No native artifact found in rust/target/release"; exit 1
           fi
           cp "$src" release-artifacts/libsignal-rs-macos.node
-
-      - name: Build (release) for Windows
-        if: ${{ matrix.os == 'windows-latest' }}
-        working-directory: rust
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          cargo build --release
-
-      - name: Locate and copy artifact (Windows)
-        if: ${{ matrix.os == 'windows-latest' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $target = Join-Path $env:GITHUB_WORKSPACE 'rust\target\release'
-          if (-not (Test-Path $target)) { throw "Build output not found at $target" }
-
-          $dll = Get-ChildItem $target -Filter *.dll -File | Select-Object -First 1
-          if (-not $dll) { throw "No DLL found in $target" }
-
-          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\release-artifacts" -Force | Out-Null
-          Copy-Item $dll.FullName -Destination "$env:GITHUB_WORKSPACE\release-artifacts\libsignal-rs-windows.dll" -Force
-
-
-      - name: Check Linux artifact exists
-        if: ${{ matrix.os == 'ubuntu-latest' }}
-        id: check_asset_linux
-        shell: bash
-        run: |
-          if [ -f ./release-artifacts/libsignal-rs-linux-x86_64.node ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Upload release asset (Linux x86_64)
-        if: ${{ needs.prepare-upload.outputs.upload_url != '' && matrix.os == 'ubuntu-latest' && steps.check_asset_linux.outputs.exists == 'true' }}
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
-          asset_path: ./release-artifacts/libsignal-rs-linux-x86_64.node
-          asset_name: libsignal-rs-linux-x86_64.node
-          asset_content_type: application/octet-stream
 
       - name: Check macOS artifact exists
         if: ${{ matrix.os == 'macos-latest' }}
@@ -185,6 +241,28 @@ jobs:
           asset_name: libsignal-rs-macos.node
           asset_content_type: application/octet-stream
 
+      - name: Build Windows (release)
+        if: ${{ matrix.os == 'windows-latest' }}
+        working-directory: rust
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --release
+
+      - name: Locate and copy artifact (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = Join-Path $env:GITHUB_WORKSPACE 'rust\target\release'
+          if (-not (Test-Path $target)) { throw "Build output not found at $target" }
+
+          $dll = Get-ChildItem $target -Filter *.dll -File | Select-Object -First 1
+          if (-not $dll) { throw "No DLL found in $target" }
+
+          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\release-artifacts" -Force | Out-Null
+          Copy-Item $dll.FullName -Destination "$env:GITHUB_WORKSPACE\release-artifacts\libsignal-rs-windows.dll" -Force
+
       - name: Check Windows artifact exists
         if: ${{ matrix.os == 'windows-latest' }}
         id: check_asset_windows
@@ -192,7 +270,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $p = Join-Path $env:GITHUB_WORKSPACE 'release-artifacts\libsignal-rs-windows.dll'
-          if (Test-Path $p) { echo "exists=true" >> $env:GITHUB_OUTPUT } else { echo "exists=false" >> $env:GITHUB_OUTPUT }
+          if (Test-Path $p) { echo "exists=true" >> $GITHUB_OUTPUT } else { echo "exists=false" >> $GITHUB_OUTPUT }
 
       - name: Upload release asset (Windows)
         if: ${{ needs.prepare-upload.outputs.upload_url != '' && matrix.os == 'windows-latest' && steps.check_asset_windows.outputs.exists == 'true' }}
@@ -289,70 +367,4 @@ jobs:
           upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
           asset_path: ./release-artifacts/libsignal-rs-android-armv7.node
           asset_name: libsignal-rs-android-armv7.node
-          asset_content_type: application/octet-stream
-
-  build-linux-aarch64:
-    needs: [prepare-upload]
-    runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Get upload URL from prepare-upload
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "UPLOAD_URL=${{ needs.prepare-upload.outputs.upload_url }}" >> "$GITHUB_ENV"
-
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-
-      - name: Add aarch64 target and install cross toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup target add aarch64-unknown-linux-gnu || true
-          # install aarch64 cross linker on runner so cargo can link target binaries
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu || true
-          # set CC for the target (cargo will pick this env var when building target)
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-
-      - name: Build (release) for linux aarch64
-        working-directory: rust
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ../release-artifacts
-          echo "Building target aarch64-unknown-linux-gnu"
-          # If linker env var is required, cargo will pick CC_aarch64_unknown_linux_gnu from env
-          cargo build --release --target aarch64-unknown-linux-gnu
-          src=$(find target/aarch64-unknown-linux-gnu/release -maxdepth 1 -type f \( -name "*.so" -o -name "*.a" -o -name "*.dylib" \) -print -quit)
-          if [ -z "$src" ]; then
-            echo "No Linux aarch64 artifact found in target/aarch64-unknown-linux-gnu/release"; exit 1
-          fi
-          cp "$src" ../release-artifacts/libsignal-rs-linux-aarch64.node
-
-      - name: Check Linux aarch64 artifact exists
-        id: check_asset_linux_aarch64
-        shell: bash
-        run: |
-          if [ -f ./release-artifacts/libsignal-rs-linux-aarch64.node ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Upload release asset (Linux aarch64)
-        if: ${{ needs.prepare-upload.outputs.upload_url != '' && steps.check_asset_linux_aarch64.outputs.exists == 'true' }}
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
-          asset_path: ./release-artifacts/libsignal-rs-linux-aarch64.node
-          asset_name: libsignal-rs-linux-aarch64.node
           asset_content_type: application/octet-stream
