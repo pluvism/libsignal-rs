@@ -32,6 +32,30 @@ jobs:
             asset: libsignal-rs-linux-aarch64.node
 
           # --------------------------
+          # Linux ARMv7 (32-bit ARM)
+          # --------------------------
+          - name: Linux armv7
+            os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            asset: libsignal-rs-linux-armv7.node
+
+          # --------------------------
+          # Android ARM64 (aarch64)
+          # --------------------------
+          - name: Android arm64
+            os: ubuntu-latest
+            target: aarch64-linux-android
+            asset: libsignal-rs-android-arm64.node
+
+          # --------------------------
+          # Android ARMv7
+          # --------------------------
+          - name: Android armv7
+            os: ubuntu-latest
+            target: armv7-linux-androideabi
+            asset: libsignal-rs-android-armv7.node
+
+          # --------------------------
           # Windows x86_64
           # --------------------------
           - name: Windows x86_64
@@ -40,12 +64,13 @@ jobs:
             asset: libsignal-rs-windows.dll
 
           # --------------------------
-          # macOS (x86_64 runner builds universal libs)
+          # macOS (universal via x86_64 runner)
           # --------------------------
           - name: macOS Universal
             os: macos-latest
             target: x86_64-apple-darwin
             asset: libsignal-rs-macos.node
+
 
     steps:
       - uses: actions/checkout@v4
