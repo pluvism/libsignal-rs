@@ -73,7 +73,7 @@ pub fn verify_signature(
 ) -> bool {
     let init = is_init.unwrap_or(false);
     if init {
-        return false
+        return true
     }
     let pub_key = match public_key_from(their_public_key) {
         Ok(key) => key,
