@@ -1,7 +1,13 @@
 name: Tests and release
 
 on:
-  workflow_dispatch: {}       
+  push:
+    branches:
+      - "**"
+    tags-ignore:
+      - "ubi-*"
+  pull_request:
+  workflow_dispatch: {}
 
 env:
   CRATE_NAME: ubi
@@ -85,7 +91,7 @@ jobs:
             toolchain: nightly
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set "--features" flag value
@@ -97,6 +103,7 @@ jobs:
           else
               echo "features=default" >> "$GITHUB_OUTPUT"
           fi
+          cat "$GITHUB_OUTPUT"
 
       - name: Compute build args (handles optional 'bin' in matrix)
         id: build-args
@@ -108,152 +115,27 @@ jobs:
           else
             echo "BUILD_ARGS=${BASE_ARGS}" >> "$GITHUB_ENV"
           fi
-          echo "Computed BUILD_ARGS=${BUILD_ARGS:-<unset>}"
 
-      # Install and resolve 'cross' (explicit lookup) and cache targets
-      - name: Set up QEMU (for cross images)
-        uses: docker/setup-qemu-action@v2
+          # Only strip for these targets (linux x86_64, linux aarch64, macos, windows)
+          STRIP_TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu"
+          if echo "$STRIP_TARGETS" | grep -q "${{ matrix.platform.target }}"; then
+            echo "DO_STRIP=true" >> "$GITHUB_ENV"
+          else
+            echo "DO_STRIP=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build with houseabsolute/actions-rust-cross (working dir = rust)
+        uses: houseabsolute/actions-rust-cross@v1
         with:
-          platforms: all
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Cache cargo registry + target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: cargo-cache-${{ runner.os }}-$(echo "${{ matrix.platform.target }}" | tr / -)-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: |
-            cargo-cache-${{ runner.os }}-$(echo "${{ matrix.platform.target }}" | tr / -)-
-
-
-      - name: Install Rust toolchain (for installing cross)
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-
-      - name: Install cross (cargo) into workspace CARGO_HOME
+          command: "build"
+          target: ${{ matrix.platform.target }}
+          toolchain: ${{ matrix.toolchain }}
+          args: ${{ env.BUILD_ARGS }}
+          strip: ${{ env.DO_STRIP == 'true' }}
+        working-directory: rust
         env:
-          CARGO_HOME: ${{ github.workspace }}/.cargo
-        run: |
-          set -euo pipefail
-          mkdir -p "$CARGO_HOME"
-          cargo install --locked cross || true
-          echo "Installed in $CARGO_HOME/bin"
-          ls -la "$CARGO_HOME/bin" || true
-          # show version if possible
-          if [ -x "$CARGO_HOME/bin/cross" ]; then
-            "$CARGO_HOME/bin/cross" --version || true
-          fi
-
-      - name: Add cargo bin to PATH for remaining steps
-        run: |
-          set -euo pipefail
-          add_paths=("${{ github.workspace }}/.cargo/bin" "$HOME/.cargo/bin")
-          for p in "${add_paths[@]}"; do
-            if [ -d "$p" ]; then
-              echo "PATH=$p:$PATH" >> "$GITHUB_ENV"
-            fi
-          done
-
-      - name: Build with cross (explicit cross lookup) — manifest in rust/Cargo.toml
-        id: cross_build
-        shell: bash
-        env:
-          TRIPLE: ${{ matrix.platform.target }}
-          BUILD_ARGS: ${{ env.BUILD_ARGS }}
-        run: |
-          set -euo pipefail
-
-          # Resolve cross binary path robustly
-          CROSS_BIN=""
-          if [ -x "${{ github.workspace }}/.cargo/bin/cross" ]; then
-            CROSS_BIN="${{ github.workspace }}/.cargo/bin/cross"
-          elif [ -x "$HOME/.cargo/bin/cross" ]; then
-            CROSS_BIN="$HOME/.cargo/bin/cross"
-          elif command -v cross >/dev/null 2>&1; then
-            CROSS_BIN="$(command -v cross)"
-          fi
-          echo "CROSS_BIN=${CROSS_BIN:-<not found>}"
-
-          if [ -z "$CROSS_BIN" ]; then
-            echo "ERROR: cross not found; install failed or PATH issue. See previous steps for 'ls -la'."
-            exit 127
-          fi
-
-          echo "Building target $TRIPLE (manifest rust/Cargo.toml)"
-          # run cross build (manifest path points to rust/Cargo.toml)
-          "$CROSS_BIN" build --release --target "$TRIPLE" --manifest-path rust/Cargo.toml $BUILD_ARGS -v
-
-          # After build, create a normalized list of candidate artifact paths (robust search)
-          candidates=()
-          # common direct target folder
-          candidates+=($(find rust/target/"$TRIPLE"/release -maxdepth 1 -type f -print 2>/dev/null || true))
-          # deps folder
-          candidates+=($(find rust/target/"$TRIPLE"/release/deps -maxdepth 1 -type f -print 2>/dev/null || true))
-          # nested search under target for this triple
-          candidates+=($(find rust/target -type f -path "*/$TRIPLE/release/*" -maxdepth 8 -print 2>/dev/null || true))
-          # also check top-level release dir (if crate used workspace default)
-          candidates+=($(find rust/target/release -maxdepth 1 -type f -print 2>/dev/null || true))
-
-          # filter candidates for the filetypes we expect (.node, .so, .dylib, .dll, .a, .rlib)
-          filtered=()
-          for p in "${candidates[@]}"; do
-            case "$p" in
-              *.node|*.so|*.dylib|*.dll|*.a|*.rlib) filtered+=("$p") ;;
-            esac
-          done
-
-          # Deduplicate while preserving order
-          uniq_filtered=()
-          declare -A seen
-          for p in "${filtered[@]}"; do
-            if [ -n "$p" ] && [ -z "${seen[$p]:-}" ]; then
-              uniq_filtered+=("$p")
-              seen[$p]=1
-            fi
-          done
-
-          # If nothing found, print debugging info and fail
-          if [ ${#uniq_filtered[@]} -eq 0 ]; then
-            echo "No artifact candidates found for $TRIPLE. Printing some diagnostics:"
-            echo "Listing rust/target/$TRIPLE/release:"
-            ls -la rust/target/"$TRIPLE"/release || true
-            echo "Listing rust/target/$TRIPLE/release/deps:"
-            ls -la rust/target/"$TRIPLE"/release/deps || true
-            echo "Listing rust/target/release:"
-            ls -la rust/target/release || true
-            # print entire rust/target tree small preview
-            echo "Preview of rust/target:"
-            find rust/target -maxdepth 3 -type f -print 2>/dev/null || true
-            exit 1
-          fi
-
-          # Pick the best candidate: prefer .node, then .so/.dylib/.dll, then others
-          preferred=""
-          for p in "${uniq_filtered[@]}"; do
-            case "$p" in
-              *.node) preferred="$p"; break ;;
-            esac
-          done
-          if [ -z "$preferred" ]; then
-            for p in "${uniq_filtered[@]}"; do
-              case "$p" in
-                *.so|*.dylib|*.dll) preferred="$p"; break ;;
-              esac
-            done
-          fi
-          if [ -z "$preferred" ]; then
-            preferred="${uniq_filtered[0]}"
-          fi
-
-          echo "Selected build output: $preferred"
-          echo "selected_output=$preferred" >> "$GITHUB_OUTPUT"
+          RUSTFLAGS: ${{ env.RUSTFLAGS }}
+          CARGO_TERM_COLOR: always
 
       - name: Map target -> asset file name (match getAssetName)
         id: map-asset
@@ -261,6 +143,7 @@ jobs:
         run: |
           set -euo pipefail
           TARGET="${{ matrix.platform.target }}"
+          echo "Target triple: $TARGET"
 
           asset=""
           if [[ "$TARGET" == *"android"* ]]; then
@@ -290,72 +173,79 @@ jobs:
           echo "asset=${asset}" >> "$GITHUB_OUTPUT"
           echo "Selected asset name: ${asset}"
 
-      - name: Copy and (optionally) strip artifact into release-artifacts
-        id: copy-and-strip
+      - name: Locate built artifact robustly and copy to release-artifacts
+        id: copy-artifact
         shell: bash
-        env:
-          SELECTED_OUTPUT: ${{ steps.cross_build.outputs.selected_output }}
-          ASSET_NAME: ${{ steps.map-asset.outputs.asset }}
         run: |
           set -euo pipefail
-          mkdir -p release-artifacts
-          if [ -z "${SELECTED_OUTPUT:-}" ]; then
-            echo "No selected output path from previous step"; exit 1
-          fi
-          echo "Copying $SELECTED_OUTPUT -> release-artifacts/${ASSET_NAME}"
-          cp "$SELECTED_OUTPUT" "release-artifacts/${ASSET_NAME}"
-          echo "Copied. File info:"
-          ls -la "release-artifacts/${ASSET_NAME}"
-          # Basic safety check with 'file' to determine type
-          file_out="$(file -b --mime-type "release-artifacts/${ASSET_NAME}" || true)"
-          echo "mime-type: $file_out"
-
-          # Decide whether to attempt stripping.
-          # Only attempt for linux/mac/windows targets (user requested) and only if 'strip' is available and file type indicates native binary.
           TARGET="${{ matrix.platform.target }}"
-          should_strip=false
-          case "$TARGET" in
-            *"linux"*|*"apple-darwin"*|*"windows"*)
-              should_strip=true
-              ;;
-            *)
-              should_strip=false
-              ;;
-          esac
+          ASSET_NAME="${{ steps.map-asset.outputs.asset }}"
 
-          if $should_strip; then
-            echo "Attempting strip for ${ASSET_NAME} (if appropriate)"
-            # pick a strip tool if available: try target-specific cross-strip then host strip
-            # target-specific strip examples: aarch64-linux-gnu-strip (for aarch64-linux), x86_64-linux-gnu-strip for x86_64 cross
-            # we'll attempt a small list; if none exists, skip with a warning.
-            strip_cmd=""
-            if command -v aarch64-linux-gnu-strip >/dev/null 2>&1; then
-              strip_cmd="aarch64-linux-gnu-strip"
-            elif command -v x86_64-linux-gnu-strip >/dev/null 2>&1; then
-              strip_cmd="x86_64-linux-gnu-strip"
-            elif command -v strip >/dev/null 2>&1; then
-              strip_cmd="strip"
-            fi
+          # Candidate directories (working dir is repo root; builds were run in rust/)
+          SEARCH_DIRS=(
+            "rust/target/$TARGET/release"
+            "rust/target/release"
+            "rust/target/*/$TARGET/release"
+            "target/$TARGET/release"
+            "target/release"
+          )
 
-            if [ -n "$strip_cmd" ]; then
-              echo "Using strip command: $strip_cmd"
-              # Only run strip if file appears to be an ELF, PE or Mach-O (basic check)
-              file -b "release-artifacts/${ASSET_NAME}" | egrep -i 'elf|pe32|mach-o' >/dev/null 2>&1 || { echo "File type not recognized as native binary; skipping strip"; exit 0; }
-              # run strip safely (use --strip-unneeded for ELF-like)
-              if [ "$strip_cmd" = "strip" ]; then
-                # generic strip
-                strip --strip-unneeded "release-artifacts/${ASSET_NAME}" || echo "strip failed"
-              else
-                $strip_cmd --strip-unneeded "release-artifacts/${ASSET_NAME}" || echo "$strip_cmd failed"
-              fi
-              echo "After strip:"
-              ls -la "release-artifacts/${ASSET_NAME}"
-            else
-              echo "No strip command found on runner; skipping strip for ${ASSET_NAME}"
-            fi
-          else
-            echo "Skipping strip for target $TARGET"
+          # candidate filename patterns (ordered by preference)
+          patterns=(
+            "libsignal*.so"    # linux .so
+            "libsignal*.dylib" # mac .dylib
+            "libsignal*.a"     # static archive
+            "libsignal*.dll"   # windows
+            "${{ matrix.platform.bin }}" # exact binary name if provided
+            "${{ matrix.platform.bin }}.*" # binary with suffix
+            "${{ env.CRATE_NAME }}" # crate name
+            "${{ env.CRATE_NAME }}.*"
+            "*.so"
+            "*.dylib"
+            "*.dll"
+            "*"
+          )
+
+          found=""
+          for d in "${SEARCH_DIRS[@]}"; do
+            # expand glob
+            for dir in $(bash -c "ls -d $d 2>/dev/null || true"); do
+              echo "Searching in $dir"
+              for p in "${patterns[@]}"; do
+                # find non-empty files that match and prefer files not in deps/ unless nothing else found
+                candidate=$(find "$dir" -maxdepth 1 -type f -name "$p" ! -path "*/.fingerprint/*" -size +0c -print -quit 2>/dev/null || true)
+                if [ -n "$candidate" ]; then
+                  echo "Candidate matched pattern $p -> $candidate"
+                  found="$candidate"
+                  break 3
+                fi
+              done
+            done
+          done
+
+          # If still empty, try to find anything in rust/target that looks like the crate/binary (last resort)
+          if [ -z "$found" ]; then
+            echo "Last-resort search: looking for any file in rust/target matching crate name or libsignal"
+            found=$(find rust/target -type f \( -iname "*libsignal*" -o -iname "*${{ env.CRATE_NAME }}*" -o -iname "*.so" -o -iname "*.dylib" -o -iname "*.dll" \) -size +0c -print -quit 2>/dev/null || true)
           fi
+
+          if [ -z "$found" ]; then
+            echo "ERROR: No build artifact found for target $TARGET."
+            echo "Searched directories:"
+            printf '%s\n' "${SEARCH_DIRS[@]}"
+            echo
+            echo "Directory listings (rust/target/*):"
+            ls -la rust/target || true
+            echo
+            echo "If your crate produced only rlib/rlib-like files or the artifact has a nonstandard name, adjust the patterns."
+            exit 1
+          fi
+
+          echo "Found build output: $found"
+          mkdir -p release-artifacts
+          cp "$found" "release-artifacts/${ASSET_NAME}"
+          echo "Copied to release-artifacts/${ASSET_NAME}"
+          ls -la release-artifacts
 
       - name: Upload artifact to workflow run
         uses: actions/upload-artifact@v4
@@ -369,8 +259,6 @@ jobs:
     needs: test-matrix
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    env:
-      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -379,7 +267,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
-          # pattern left empty -> download all artifacts
 
       - name: Show files we will attach
         run: |
@@ -391,6 +278,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          files: release-artifacts/**/*
+          files: |
+            release-artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
