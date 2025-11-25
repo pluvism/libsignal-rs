@@ -19,7 +19,7 @@ function getAssetName() {
     if (arch === 'x64') return 'libsignal-rs-linux-x86_64.node';
     if (arch === 'arm64' || arch === 'aarch64') {
       
-      if (process.env.ANDROID_ROOT || process.env.ANDROID_DATA) return 'libsignal-rs-android-arm64.node';
+      // if (process.env.ANDROID_ROOT || process.env.ANDROID_DATA) return 'libsignal-rs-android-arm64.node';
       return 'libsignal-rs-linux-aarch64.node';
     }
     if (arch === 'arm' || arch === 'armv7l') {
