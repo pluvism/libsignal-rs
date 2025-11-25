@@ -132,7 +132,7 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           args: ${{ env.BUILD_ARGS }}
           strip: ${{ env.DO_STRIP == 'true' }}
-        working-directory: rust
+          working-directory: rust
         env:
           RUSTFLAGS: ${{ env.RUSTFLAGS }}
           CARGO_TERM_COLOR: always
