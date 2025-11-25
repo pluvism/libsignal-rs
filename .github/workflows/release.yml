@@ -1,7 +1,7 @@
 name: Build & Release (Core Platforms)
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 env:
   GITHUB_TOKEN ${{ secrets.RELEASE_GITHUB_TOKEN }}
