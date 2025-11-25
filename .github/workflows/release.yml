@@ -61,49 +61,13 @@ jobs:
           working-directory: rust
           strip: true
 
-      - name: Map target -> asset file name (match getAssetName)
-        id: map-asset
-        shell: bash
-        run: |
-          set -euo pipefail
-          TARGET="${{ matrix.platform.target }}"
-          echo "Target triple: $TARGET"
-
-          asset=""
-          if [[ "$TARGET" == *"android"* ]]; then
-            if [[ "$TARGET" == *"aarch64"* || "$TARGET" == *"arm64"* ]]; then
-              asset="libsignal-rs-android-arm64.node"
-            else
-              asset="libsignal-rs-android-armv7.node"
-            fi
-          elif [[ "$TARGET" == *"linux"* ]]; then
-            if [[ "$TARGET" == *"x86_64"* ]]; then
-              asset="libsignal-rs-linux-x86_64.node"
-            elif [[ "$TARGET" == *"aarch64"* || "$TARGET" == *"arm64"* ]]; then
-              asset="libsignal-rs-linux-aarch64.node"
-            elif [[ "$TARGET" == *"arm"* ]]; then
-              asset="libsignal-rs-linux-armv7.node"
-            else
-              asset="libsignal-rs-linux-${TARGET}.node"
-            fi
-          elif [[ "$TARGET" == *"apple-darwin"* || "$TARGET" == *"darwin"* || "$TARGET" == *"apple"* ]]; then
-            asset="libsignal-rs-macos.node"
-          elif [[ "$TARGET" == *"windows"* || "$TARGET" == *"pc-windows"* ]]; then
-            asset="libsignal-rs-windows.dll"
-          else
-            asset="libsignal-rs-${TARGET}.node"
-          fi
-
-          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
-          echo "Selected asset name: ${asset}"
-
       - name: Locate built artifact robustly and copy to release-artifacts
         id: copy-artifact
         shell: bash
         run: |
           set -euo pipefail
-          TARGET="${{ matrix.platform.target }}"
-          ASSET_NAME="${{ steps.map-asset.outputs.asset }}"
+          TARGET="${{ matrix.target }}"
+          ASSET_NAME="${{ matrix.asset }}"
 
           # Candidate directories (working dir is repo root; builds were run in rust/)
           SEARCH_DIRS=(
