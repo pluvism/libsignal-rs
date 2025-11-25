@@ -29,7 +29,6 @@ jobs:
             exit 0
           fi
 
-          
           echo "release for manual run"
           
       - name: release (manual)
@@ -292,3 +291,68 @@ jobs:
           asset_name: libsignal-rs-android-armv7.node
           asset_content_type: application/octet-stream
 
+  build-linux-aarch64:
+    needs: [prepare-upload]
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get upload URL from prepare-upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UPLOAD_URL=${{ needs.prepare-upload.outputs.upload_url }}" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - name: Add aarch64 target and install cross toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-unknown-linux-gnu || true
+          # install aarch64 cross linker on runner so cargo can link target binaries
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu || true
+          # set CC for the target (cargo will pick this env var when building target)
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build (release) for linux aarch64
+        working-directory: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../release-artifacts
+          echo "Building target aarch64-unknown-linux-gnu"
+          # If linker env var is required, cargo will pick CC_aarch64_unknown_linux_gnu from env
+          cargo build --release --target aarch64-unknown-linux-gnu
+          src=$(find target/aarch64-unknown-linux-gnu/release -maxdepth 1 -type f \( -name "*.so" -o -name "*.a" -o -name "*.dylib" \) -print -quit)
+          if [ -z "$src" ]; then
+            echo "No Linux aarch64 artifact found in target/aarch64-unknown-linux-gnu/release"; exit 1
+          fi
+          cp "$src" ../release-artifacts/libsignal-rs-linux-aarch64.node
+
+      - name: Check Linux aarch64 artifact exists
+        id: check_asset_linux_aarch64
+        shell: bash
+        run: |
+          if [ -f ./release-artifacts/libsignal-rs-linux-aarch64.node ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload release asset (Linux aarch64)
+        if: ${{ needs.prepare-upload.outputs.upload_url != '' && steps.check_asset_linux_aarch64.outputs.exists == 'true' }}
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ needs.prepare-upload.outputs.upload_url }}
+          asset_path: ./release-artifacts/libsignal-rs-linux-aarch64.node
+          asset_name: libsignal-rs-linux-aarch64.node
+          asset_content_type: application/octet-stream
