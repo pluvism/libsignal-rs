@@ -1,208 +1,114 @@
-name: Tests and release
+name: Build & Release (Core Platforms)
 
 on:
+  push:
+    tags:
+      - "*"
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Tag to release under (optional)."
-        required: false
-        default: ""
+      inputs:
+        release_tag:
+          description: "Tag to release under (optional)."
+          required: false
+          default: ""
 
 env:
-  CRATE_NAME: libsignal_rs
-  GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+  GITHUB_TOKEN ${{ secrets.RELEASE_GITHUB_TOKEN }}
   RUST_BACKTRACE: 1
 
 jobs:
-  test-matrix:
-    name: ${{ matrix.platform.os-name }} with rust ${{ matrix.toolchain }}
-    runs-on: ${{ matrix.platform.runs-on }}
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - os-name: FreeBSD-x86_64
-            runs-on: ubuntu-24.04
-            target: x86_64-unknown-freebsd
-          - os-name: Linux-x86_64
-            runs-on: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-          - os-name: Linux-x86_64 (rustls-native-roots)
-            runs-on: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            features: rustls-tls-native-roots
-          - os-name: Linux-aarch64
-            runs-on: ubuntu-24.04
-            target: aarch64-unknown-linux-musl
-          - os-name: Linux-arm
-            runs-on: ubuntu-24.04
-            target: arm-unknown-linux-musleabi
-          - os-name: Linux-i686
-            runs-on: ubuntu-24.04
-            target: i686-unknown-linux-musl
-          - os-name: Linux-powerpc
-            runs-on: ubuntu-24.04
-            target: powerpc-unknown-linux-gnu
-          - os-name: Linux-powerpc64
-            runs-on: ubuntu-24.04
-            target: powerpc64-unknown-linux-gnu
-          - os-name: Linux-powerpc64le
-            runs-on: ubuntu-24.04
-            target: powerpc64le-unknown-linux-gnu
-          - os-name: Linux-riscv64
-            runs-on: ubuntu-24.04
-            target: riscv64gc-unknown-linux-gnu
-          - os-name: Linux-s390x
-            runs-on: ubuntu-24.04
-            target: s390x-unknown-linux-gnu
-          - os-name: NetBSD-x86_64
-            runs-on: ubuntu-24.04
-            target: x86_64-unknown-netbsd
-          - os-name: Windows-aarch64
-            runs-on: windows-latest
-            target: aarch64-pc-windows-msvc
-          - os-name: Windows-i686
-            runs-on: windows-latest
-            target: i686-pc-windows-msvc
-          - os-name: Windows-x86_64
-            runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os-name: macOS-x86_64
-            runs-on: macOS-latest
-            target: x86_64-apple-darwin
-          - os-name: macOS-aarch64
-            runs-on: macOS-latest
-            target: aarch64-apple-darwin
-        toolchain:
-          - stable
         include:
-          - platform:
-              os-name: Linux-x86_64
-              runs-on: ubuntu-24.04
-              target: x86_64-unknown-linux-musl
-              bin: ubi
-            toolchain: beta
-          - platform:
-              os-name: Linux-x86_64
-              runs-on: ubuntu-24.04
-              target: x86_64-unknown-linux-musl
-              bin: ubi
-            toolchain: nightly
+          # --------------------------
+          # Linux x86_64 (GNU / glibc)
+          # --------------------------
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: libsignal-rs-linux-x86_64.node
+
+          # --------------------------
+          # Linux AArch64
+          # --------------------------
+          - name: Linux aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset: libsignal-rs-linux-aarch64.node
+
+          # --------------------------
+          # Windows x86_64
+          # --------------------------
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: libsignal-rs-windows.dll
+
+          # --------------------------
+          # macOS (x86_64 runner builds universal libs)
+          # --------------------------
+          - name: macOS Universal
+            os: macos-latest
+            target: x86_64-apple-darwin
+            asset: libsignal-rs-macos.node
 
     steps:
       - uses: actions/checkout@v4
-      - name: Set "--features" flag value
-        id: set-features-flag-value
-        shell: bash
-        run: |
-          if [ -n "${{ matrix.platform.features }}" ]; then
-              echo "features=${{ matrix.platform.features }}" >> "$GITHUB_OUTPUT"
-          else 
-              echo "features=default" >> "$GITHUB_OUTPUT"
-          fi
 
-      - name: Compute build args (handles optional 'bin' in matrix)
-        id: build-args
-        shell: bash
-        run: |
-          BASE_ARGS="--locked --release"
-          if [ -n "${{ matrix.platform.bin }}" ]; then
-            echo "BUILD_ARGS=${BASE_ARGS} --bin ${{ matrix.platform.bin }}" >> "$GITHUB_ENV"
-          else
-            echo "BUILD_ARGS=${BASE_ARGS}" >> "$GITHUB_ENV"
-          fi
-
-      - name: Build with cross
+      # working directory is rust/
+      - name: Build using cross
         uses: houseabsolute/actions-rust-cross@v1
         with:
-          working-directory: rust 
-          command: "build"
-          target: ${{ matrix.platform.target }}
-          toolchain: ${{ matrix.toolchain }}
-          args: ${{ env.BUILD_ARGS }}
+          command: build
+          toolchain: stable
+          target: ${{ matrix.target }}
+          args: "--locked --release"
+          working-directory: rust
           strip: true
 
-      - name: Map target -> asset file name
-        id: map-asset
+      - name: Copy final artifact
         shell: bash
+        working-directory: rust
         run: |
-          TARGET="${{ matrix.platform.target }}"
-          asset=""
-          if [[ "$TARGET" == *"android"* ]]; then
-            if [[ "$TARGET" == *"aarch64"* ]] || [[ "$TARGET" == *"arm64"* ]]; then
-              asset="libsignal-rs-android-arm64.node"
-            else
-              asset="libsignal-rs-android-armv7.node"
-            fi
-          elif [[ "$TARGET" == *"linux"* ]]; then
-            if [[ "$TARGET" == *"x86_64"* ]]; then
-              asset="libsignal-rs-linux-x86_64.node"
-            elif [[ "$TARGET" == *"aarch64"* ]]; then
-              asset="libsignal-rs-linux-aarch64.node"
-            elif [[ "$TARGET" == *"arm"* ]]; then
-              asset="libsignal-rs-linux-armv7.node"
-            fi
-          elif [[ "$TARGET" == *"darwin"* ]]; then
-            asset="libsignal-rs-macos.node"
-          elif [[ "$TARGET" == *"windows"* ]]; then
-            asset="libsignal-rs-windows.dll"
-          else
-            asset="libsignal-rs-${TARGET}.node"
-          fi
-          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+          set -e
+          OUT=$(find target/${{ matrix.target }}/release -maxdepth 1 -type f -name "*.so" -o -name "*.dylib" -o -name "*.dll" -print -quit)
+          echo "Found artifact: $OUT"
 
-      - name: Locate built artifact and copy to release-artifacts
-        id: copy-artifact
-        shell: bash
-        run: |
-          TARGET="${{ matrix.platform.target }}"
-          ASSET_NAME="${{ steps.map-asset.outputs.asset }}"
-
-          out=$(find rust/target/"$TARGET"/release -maxdepth 1 -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.a" -o -name "*.dll" \) -print -quit)
-          mkdir -p release-artifacts
-          cp "$out" "release-artifacts/$ASSET_NAME"
+          mkdir -p $GITHUB_WORKSPACE/release-artifacts
+          cp "$OUT" "$GITHUB_WORKSPACE/release-artifacts/${{ matrix.asset }}"
+          echo "Copied → release-artifacts/${{ matrix.asset }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.map-asset.outputs.asset }}
-          path: release-artifacts/${{ steps.map-asset.outputs.asset }}
-
+          name: ${{ matrix.asset }}
+          path: release-artifacts/${{ matrix.asset }}
 
   release:
-    needs: test-matrix
+    name: Release publish
     runs-on: ubuntu-latest
-    if: >
-      startsWith(github.ref, 'refs/tags/') ||
-      github.event_name == 'workflow_dispatch'
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Determine release tag (auto-generate if workflow_dispatch)
-        id: tag
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            if [[ "${{ github.event.inputs.release_tag }}" != "" ]]; then
-              TAG="${{ github.event.inputs.release_tag }}"
-            else
-              TAG="manual-$(date +'%Y%m%d-%H%M%S')"
-            fi
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Download artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
 
-      - name: Create GitHub Release
+      - name: Show collected artifacts
+        run: ls -R release-artifacts
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
-          files: release-artifacts/**/*
+          files: release-artifacts/**
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+          GITHUB_TOKEN ${{ secrets.RELEASE_GITHUB_TOKEN }}
